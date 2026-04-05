@@ -1,0 +1,6 @@
+vanna
+fastapi
+uvicorn[standard]
+plotly
+pandas
+python-dotenv
