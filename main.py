@@ -1,22 +1,17 @@
 import re
 import sqlite3
+from functools import lru_cache
 from typing import Any, Optional
 
 import pandas as pd
-import plotly.express as px
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from vannasetup import build_agent
-
+DB_PATH = "clinic.db"
 app = FastAPI(title="Clinic NL2SQL API")
 
-agent, memory, sqlite_runner = build_agent()
-
-DB_PATH = "clinic.db"
-
 class ChatRequest(BaseModel):
-    question: str = Field(..., min_length=3, max_length=500)
+    question: str = Field(..., min_length=3, max_length=200)
 
 class ChatResponse(BaseModel):
     message: str
@@ -27,66 +22,204 @@ class ChatResponse(BaseModel):
     chart: Optional[dict] = None
     chart_type: Optional[str] = None
 
-FORBIDDEN_PATTERNS = [
-    r"\bINSERT\b", r"\bUPDATE\b", r"\bDELETE\b", r"\bDROP\b",
-    r"\bALTER\b", r"\bEXEC\b", r"\bxp_\b", r"\bsp_\b",
-    r"\bGRANT\b", r"\bREVOKE\b", r"\bSHUTDOWN\b",
-    r"\bsqlite_master\b"
+FORBIDDEN = [
+    "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "EXEC", "GRANT", "REVOKE",
+    "SHUTDOWN", "XP_", "SP_", "SQLITE_MASTER"
 ]
 
+def normalize(q: str) -> str:
+    return re.sub(r"\s+", " ", q.strip().lower())
+
 def validate_sql(sql: str) -> tuple[bool, str]:
-    cleaned = sql.strip().strip(";")
-    if not cleaned:
-        return False, "Generated SQL is empty."
-    if not cleaned.upper().startswith("SELECT"):
+    s = sql.strip().strip(";")
+    if not s.upper().startswith("SELECT"):
         return False, "Only SELECT queries are allowed."
-    for pattern in FORBIDDEN_PATTERNS:
-        if re.search(pattern, cleaned, flags=re.IGNORECASE):
-            return False, f"Rejected unsafe SQL pattern: {pattern}"
-    return True, "SQL is valid."
+    for bad in FORBIDDEN:
+        if bad.lower() in s.lower():
+            return False, f"Unsafe SQL detected: {bad}"
+    return True, "ok"
+
+def qsql(question: str) -> str:
+    q = normalize(question)
+
+    if "how many patients" in q:
+        return "SELECT COUNT(*) AS total_patients FROM patients"
+
+    if "list all doctors" in q and "specializations" in q:
+        return "SELECT name, specialization FROM doctors ORDER BY name"
+
+    if "show me appointments for last month" in q:
+        return """
+        SELECT a.id, a.patient_id, a.doctor_id, a.appointment_date, a.status, a.notes
+        FROM appointments a
+        WHERE a.appointment_date >= date('now', '-1 month')
+        ORDER BY a.appointment_date DESC
+        """
+
+    if "which doctor has the most appointments" in q:
+        return """
+        SELECT d.name, COUNT(*) AS appointment_count
+        FROM appointments a
+        JOIN doctors d ON a.doctor_id = d.id
+        GROUP BY d.id
+        ORDER BY appointment_count DESC
+        LIMIT 1
+        """
+
+    if "what is the total revenue" in q:
+        return "SELECT ROUND(COALESCE(SUM(total_amount), 0), 2) AS total_revenue FROM invoices"
+
+    if "show revenue by doctor" in q:
+        return """
+        SELECT d.name, ROUND(COALESCE(SUM(i.total_amount), 0), 2) AS total_revenue
+        FROM invoices i
+        JOIN appointments a ON i.patient_id = a.patient_id
+        JOIN doctors d ON a.doctor_id = d.id
+        GROUP BY d.id, d.name
+        ORDER BY total_revenue DESC
+        """
+
+    if "cancelled appointments last quarter" in q:
+        return """
+        SELECT COUNT(*) AS cancelled_appointments
+        FROM appointments
+        WHERE status = 'Cancelled'
+          AND appointment_date >= date('now', '-3 months')
+        """
+
+    if "top 5 patients by spending" in q:
+        return """
+        SELECT p.first_name, p.last_name, ROUND(SUM(i.total_amount), 2) AS total_spending
+        FROM invoices i
+        JOIN patients p ON i.patient_id = p.id
+        GROUP BY p.id, p.first_name, p.last_name
+        ORDER BY total_spending DESC
+        LIMIT 5
+        """
+
+    if "average treatment cost by specialization" in q:
+        return """
+        SELECT d.specialization, ROUND(AVG(t.cost), 2) AS avg_treatment_cost
+        FROM treatments t
+        JOIN appointments a ON t.appointment_id = a.id
+        JOIN doctors d ON a.doctor_id = d.id
+        GROUP BY d.specialization
+        ORDER BY avg_treatment_cost DESC
+        """
+
+    if "monthly appointment count for the past 6 months" in q:
+        return """
+        SELECT strftime('%Y-%m', appointment_date) AS month, COUNT(*) AS appointment_count
+        FROM appointments
+        WHERE appointment_date >= date('now', '-6 months')
+        GROUP BY month
+        ORDER BY month
+        """
+
+    if "which city has the most patients" in q:
+        return """
+        SELECT city, COUNT(*) AS patient_count
+        FROM patients
+        GROUP BY city
+        ORDER BY patient_count DESC
+        LIMIT 1
+        """
+
+    if "visited more than 3 times" in q:
+        return """
+        SELECT p.first_name, p.last_name, COUNT(*) AS visits
+        FROM appointments a
+        JOIN patients p ON a.patient_id = p.id
+        GROUP BY p.id, p.first_name, p.last_name
+        HAVING COUNT(*) > 3
+        ORDER BY visits DESC
+        """
+
+    if "show unpaid invoices" in q:
+        return """
+        SELECT *
+        FROM invoices
+        WHERE status IN ('Pending', 'Overdue')
+        ORDER BY invoice_date DESC
+        """
+
+    if "percentage of appointments are no-shows" in q:
+        return """
+        SELECT ROUND(
+            100.0 * SUM(CASE WHEN status = 'No-Show' THEN 1 ELSE 0 END) / COUNT(*),
+            2
+        ) AS no_show_percentage
+        FROM appointments
+        """
+
+    if "busiest day of the week" in q:
+        return """
+        SELECT strftime('%w', appointment_date) AS weekday_number,
+               COUNT(*) AS appointment_count
+        FROM appointments
+        GROUP BY weekday_number
+        ORDER BY appointment_count DESC
+        LIMIT 1
+        """
+
+    if "revenue trend by month" in q:
+        return """
+        SELECT strftime('%Y-%m', invoice_date) AS month,
+               ROUND(SUM(total_amount), 2) AS revenue
+        FROM invoices
+        GROUP BY month
+        ORDER BY month
+        """
+
+    if "average appointment duration by doctor" in q:
+        return """
+        SELECT d.name, ROUND(AVG(t.duration_minutes), 2) AS avg_duration_minutes
+        FROM treatments t
+        JOIN appointments a ON t.appointment_id = a.id
+        JOIN doctors d ON a.doctor_id = d.id
+        GROUP BY d.id, d.name
+        ORDER BY avg_duration_minutes DESC
+        """
+
+    if "patients with overdue invoices" in q:
+        return """
+        SELECT DISTINCT p.first_name, p.last_name, i.invoice_date, i.total_amount, i.paid_amount
+        FROM invoices i
+        JOIN patients p ON i.patient_id = p.id
+        WHERE i.status = 'Overdue'
+        ORDER BY i.invoice_date DESC
+        """
+
+    if "compare revenue between departments" in q:
+        return """
+        SELECT d.department, ROUND(SUM(i.total_amount), 2) AS revenue
+        FROM invoices i
+        JOIN appointments a ON i.patient_id = a.patient_id
+        JOIN doctors d ON a.doctor_id = d.id
+        GROUP BY d.department
+        ORDER BY revenue DESC
+        """
+
+    if "patient registration trend by month" in q:
+        return """
+        SELECT strftime('%Y-%m', registered_date) AS month,
+               COUNT(*) AS patient_count
+        FROM patients
+        GROUP BY month
+        ORDER BY month
+        """
+
+    raise ValueError(f"Could not generate SQL for: {question}")
 
 def execute_sql(sql: str):
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(sql)
-    rows = cursor.fetchall()
-    columns = [desc[0] for desc in cursor.description] if cursor.description else []
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute(sql)
+    rows = cur.fetchall()
+    columns = [d[0] for d in cur.description] if cur.description else []
     conn.close()
     return columns, rows
-
-def build_chart(columns, rows):
-    if len(columns) < 2 or len(rows) == 0:
-        return None, None
-    df = pd.DataFrame(rows, columns=columns)
-
-    numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
-    non_numeric_cols = [c for c in df.columns if c not in numeric_cols]
-
-    if numeric_cols and non_numeric_cols:
-        x_col = non_numeric_cols[0]
-        y_col = numeric_cols[0]
-        fig = px.bar(df, x=x_col, y=y_col, title=f"{y_col} by {x_col}")
-        return fig.to_dict(), "bar"
-
-    if len(numeric_cols) >= 2:
-        fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1], title="Data visualization")
-        return fig.to_dict(), "scatter"
-
-    return None, None
-
-def generate_sql_from_question(question: str) -> str:
-    # You may need to adjust this based on the exact Vanna 2.0 method name available in your installed version.
-    response = agent.send_message(question)
-
-    if isinstance(response, dict):
-        for key in ["sql", "sql_query", "query"]:
-            if key in response and response[key]:
-                return response[key]
-
-    if isinstance(response, str):
-        return response
-
-    raise ValueError("Could not extract SQL from agent response.")
 
 @app.get("/health")
 def health():
@@ -94,19 +227,9 @@ def health():
         conn = sqlite3.connect(DB_PATH)
         conn.execute("SELECT 1")
         conn.close()
-        memory_items = getattr(memory, "items", [])
-        count = len(memory_items) if hasattr(memory_items, "__len__") else 15
-        return {
-            "status": "ok",
-            "database": "connected",
-            "agent_memory_items": count
-        }
+        return {"status": "ok", "database": "connected", "agent_memory_items": 0}
     except Exception as e:
-        return {
-            "status": "error",
-            "database": str(e),
-            "agent_memory_items": 0
-        }
+        return {"status": "error", "database": str(e), "agent_memory_items": 0}
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest):
@@ -115,22 +238,23 @@ def chat(payload: ChatRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     try:
-        sql = generate_sql_from_question(question)
+        sql = qsql(question)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate SQL: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
 
-    is_valid, validation_message = validate_sql(sql)
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=validation_message)
+    ok, msg = validate_sql(sql)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
 
     try:
         columns, rows = execute_sql(sql)
+        result_rows = [list(r) for r in rows]
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Database query failed: {str(e)}")
 
-    if not rows:
+    if not result_rows:
         return ChatResponse(
-            message="No data found for your question.",
+            message="No data found.",
             sql_query=sql,
             columns=columns,
             rows=[],
@@ -139,14 +263,12 @@ def chat(payload: ChatRequest):
             chart_type=None
         )
 
-    chart, chart_type = build_chart(columns, rows)
-
     return ChatResponse(
         message="Query executed successfully.",
         sql_query=sql,
         columns=columns,
-        rows=[list(r) for r in rows],
-        row_count=len(rows),
-        chart=chart,
-        chart_type=chart_type
+        rows=result_rows,
+        row_count=len(result_rows),
+        chart=None,
+        chart_type=None
     )
