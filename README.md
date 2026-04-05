@@ -155,26 +155,26 @@ Example response:
 
 You can test the API with questions like:
 
-- 1	How many patients do we have?	Returns count
-- 2	List all doctors and their specializations	Returns doctor list
-- 3	Show me appointments for last month	Filters by date
-- 4	Which doctor has the most appointments?	Aggregation + ordering
-- 5	What is the total revenue?	SUM of invoice amounts
-- 6	Show revenue by doctor	JOIN + GROUP BY
-- 7	How many cancelled appointments last quarter?	Status filter + date
-- 8	Top 5 patients by spending	JOIN + ORDER + LIMIT
-- 9	Average treatment cost by specialization	Multi-table JOIN + AVG
-- 10	Show monthly appointment count for the past 6 months	Date grouping
-- 11	Which city has the most patients?	GROUP BY + COUNT
-- 12	List patients who visited more than 3 times	HAVING clause
-- 13	Show unpaid invoices	Status filter
-- 14	What percentage of appointments are no-shows?	Percentage calculation
-- 15	Show the busiest day of the week for appointments	Date function
-- 16	Revenue trend by month	Time series
-- 17	Average appointment duration by doctor	AVG + GROUP BY
-- 18	List patients with overdue invoices	JOIN + filter
-- 19	Compare revenue between departments	JOIN + GROUP BY
-- 20	Show patient registration trend by month	Date grouping
+- How many patients do we have?	Returns count
+- List all doctors and their specializations	Returns doctor list
+- Show me appointments for last month	Filters by date
+- Which doctor has the most appointments?	Aggregation + ordering
+- What is the total revenue?	SUM of invoice amounts
+- Show revenue by doctor	JOIN + GROUP BY
+- How many cancelled appointments last quarter?	Status filter + date
+- Top 5 patients by spending	JOIN + ORDER + LIMIT
+- Average treatment cost by specialization	Multi-table JOIN + AVG
+- Show monthly appointment count for the past 6 months	Date grouping
+- Which city has the most patients?	GROUP BY + COUNT
+- List patients who visited more than 3 times	HAVING clause
+- Show unpaid invoices	Status filter
+- What percentage of appointments are no-shows?	Percentage calculation
+- Show the busiest day of the week for appointments	Date function
+- Revenue trend by month	Time series
+- Average appointment duration by doctor	AVG + GROUP BY
+- List patients with overdue invoices	JOIN + filter
+- Compare revenue between departments	JOIN + GROUP BY
+- Show patient registration trend by month	Date grouping
 
 
 ## Architecture Overview
